@@ -87,3 +87,99 @@ void loop() {
   } 
   // 2. 센서에서 손을 뗐을 때 (기준값 미만)
   else {
+    
+    // 방금 전까지 눌려있다가 손을 뗀 순간
+    if (isPressed) {
+      isPressed = false;
+      
+      // 누른 시간 계산 (현재 시간 - 시작 시간)
+      unsigned long duration = millis() - pressStartTime;
+
+      // LED 끄기
+      digitalWrite(ledPin, HIGH);
+
+      Serial.println("--------------------------------");
+      Serial.println("패드 터치 종료! 데이터 전송 중...");
+      Serial.print("누적 시간: "); Serial.print(duration); Serial.println(" ms");
+      Serial.print("최대 압력: "); Serial.print(maxPressurePercent); Serial.println("%");
+
+      // [수정] 수집된 데이터와 누른 시간을 함께 서버로 전송
+      sendPadSignal(maxSensorValue, maxPressurePercent, duration);
+
+      // 바운싱(노이즈) 방지를 위한 약간의 대기
+      delay(300);
+    }
+  }
+
+  // 루프 주기 조절 (반응 속도를 위해 50ms로 단축)
+  delay(50);
+}
+
+// =====================================
+// WiFi 연결
+// =====================================
+void connectWiFi() {
+  Serial.print("WiFi 연결 중");
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println();
+  Serial.println("WiFi 연결 성공!");
+  Serial.println("================================");
+}
+
+// =====================================
+// 서버 전송 (duration_ms 파라미터 추가)
+// =====================================
+void sendPadSignal(int sensorValue, int pressurePercent, unsigned long duration) {
+  // WiFi 연결 확인
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi 연결 끊김");
+    return;
+  }
+
+  WiFiClient client;
+  HTTPClient http;
+
+  // 서버 연결 시작
+  http.begin(client, serverUrl);
+
+  // JSON 형식 지정
+  http.addHeader("Content-Type", "application/json");
+
+  // [수정] Flask 서버 규격에 맞게 "duration_ms" 항목을 추가한 JSON 문자열 생성
+  String jsonPayload =
+    "{"
+    "\"pad_id\":" + String(padId) + ","
+    "\"value\":" + String(sensorValue) + ","
+    "\"pressure\":" + String(pressurePercent) + ","
+    "\"duration_ms\":" + String(duration) + ","
+    "\"event\":\"touch_complete\""
+    "}";
+
+  Serial.println("전송 데이터:");
+  Serial.println(jsonPayload);
+
+  // POST 요청 전송
+  int httpResponseCode = http.POST(jsonPayload);
+
+  // 결과 출력
+  if (httpResponseCode > 0) {
+    Serial.print("전송 성공! 응답 코드: ");
+    Serial.println(httpResponseCode);
+    String response = http.getString();
+    Serial.print("서버 응답: ");
+    Serial.println(response);
+  } else {
+    Serial.print("전송 실패. 에러 코드: ");
+    Serial.println(httpResponseCode);
+  }
+
+  // 연결 종료
+  http.end();
+  Serial.println("--------------------------------");
+}
