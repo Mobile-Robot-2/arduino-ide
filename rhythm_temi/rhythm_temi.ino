@@ -1,134 +1,208 @@
 #include <ESP8266WiFi.h>
+#include <ESP8266HTTPClient.h>
 
-// =========================
-// 와이파이(핫스팟) 정보
-// =========================
-const char* ssid = "U+Net8D80";
-const char* password = "498D21G@09";
+// =====================================
+// WiFi 설정
+// =====================================
 
-// =========================
-// Python 서버(노트북) 정보
-// =========================
-const char* host = "192.168.219.101"; // 노트북의 IP 주소
-const int port = 5000;
+const char* ssid = "AndroidHotspot1119";
+const char* password = "2022073290";
 
-WiFiClient client;
+// =====================================
+// 서버 주소
+// =====================================
 
-// =========================
-// 센서 연결 핀 정의 (D1 ~ D5)
-// =========================
-#define PAD_A D1
-#define PAD_B D2
-#define PAD_C D3
-#define PAD_D D4
-#define PAD_E D5
+const char* serverUrl =
+  "http://10.139.44.59:5000/pad";
 
-// 이전 발판 상태 저장 변수 (기본값 HIGH)
-bool lastA = HIGH;
-bool lastB = HIGH;
-bool lastC = HIGH;
-bool lastD = HIGH;
-bool lastE = HIGH;
+// =====================================
+// FSR 센서 설정
+// =====================================
+
+// FSR 연결 핀
+const int sensorPin = A0;
+
+// LED 핀 (내장 LED)
+const int ledPin = D4;
+
+// 눌림 기준값
+const int threshold = 200;
+
+// 중복 입력 방지
+bool isPressed = false;
+
+// 패드 번호
+const int padId = 1;
+
+// =====================================
 
 void setup() {
+
   Serial.begin(115200);
 
-  // 센서 핀을 입력 및 풀업 모드로 설정 (풀업: 평소 HIGH, 밟으면 LOW)
-  pinMode(PAD_A, INPUT_PULLUP);
-  pinMode(PAD_B, INPUT_PULLUP);
-  pinMode(PAD_C, INPUT_PULLUP);
-  pinMode(PAD_D, INPUT_PULLUP);
-  pinMode(PAD_E, INPUT_PULLUP);
+  // LED 출력 설정
+  pinMode(ledPin, OUTPUT);
 
-  // WiFi 연결 시작
+  // 시작 시 LED 끄기
+  digitalWrite(ledPin, HIGH);
+
+  Serial.println();
+  Serial.println("================================");
+  Serial.println("FSR 스마트 패드 시스템 시작");
+  Serial.println("================================");
+
+  connectWiFi();
+
+  Serial.println("시스템 준비 완료");
+}
+
+// =====================================
+
+void loop() {
+
+  // FSR 값 읽기
+  int sensorValue = analogRead(sensorPin);
+
+  // 작은 노이즈 제거
+  if (sensorValue < 10) {
+    sensorValue = 0;
+  }
+
+  // 압력 퍼센트 계산
+  int pressurePercent =
+    map(sensorValue, 0, 1023, 0, 100);
+
+  // threshold 이상일 때만 동작
+  if (sensorValue > threshold) {
+
+    Serial.println("--------------------------------");
+
+    Serial.print("FSR 값: ");
+    Serial.println(sensorValue);
+
+    Serial.print("압력 강도(%): ");
+    Serial.println(pressurePercent);
+
+    // 처음 눌린 순간만 실행
+    if (!isPressed) {
+
+      Serial.println("패드 터치 감지!");
+
+      // LED 켜기
+      digitalWrite(ledPin, LOW);
+
+      // 서버 전송
+      sendPadSignal(
+        sensorValue,
+        pressurePercent
+      );
+
+      // 눌림 상태 저장
+      isPressed = true;
+
+      // 노이즈 방지
+      delay(300);
+    }
+
+  } else {
+
+    // LED 끄기
+    digitalWrite(ledPin, HIGH);
+
+    // 다시 입력 가능
+    isPressed = false;
+  }
+
+  delay(100);
+}
+
+// =====================================
+// WiFi 연결
+// =====================================
+
+void connectWiFi() {
+
+  Serial.print("WiFi 연결 중");
+
   WiFi.begin(ssid, password);
-  Serial.print("WiFi 연결중");
 
   while (WiFi.status() != WL_CONNECTED) {
+
     delay(500);
     Serial.print(".");
   }
 
-  Serial.println("\nWiFi 연결 완료");
-  Serial.print("아두이노 IP: ");
-  Serial.println(WiFi.localIP());
-
-  // 서버에 최초 연결 시도
-  connectServer();
+  Serial.println();
+  Serial.println("WiFi 연결 성공!");
+  Serial.println("================================");
 }
 
-void loop() {
-  // 서버와 연결이 끊어지면 자동으로 재연결 시도
-  if (!client.connected()) {
-    connectServer();
+// =====================================
+// 서버 전송
+// =====================================
+
+void sendPadSignal(
+  int sensorValue,
+  int pressurePercent
+) {
+
+  // WiFi 연결 확인
+  if (WiFi.status() != WL_CONNECTED) {
+
+    Serial.println("WiFi 연결 끊김");
+    return;
   }
 
-  // 5개 패드 센서 값 실시간 읽기
-  bool currentA = digitalRead(PAD_A);
-  bool currentB = digitalRead(PAD_B);
-  bool currentC = digitalRead(PAD_C);
-  bool currentD = digitalRead(PAD_D);
-  bool currentE = digitalRead(PAD_E);
+  WiFiClient client;
+  HTTPClient http;
 
-  // 1번 패드 (PAD_A): 평소 HIGH(1)였다가 발로 밟아 LOW(0)가 되는 순간 감지
-  if (lastA == HIGH && currentA == LOW) {
-    sendMessage("PAD_A");
-    delay(200); // 밟을 때 진동으로 여러 번 찍히는 현상(바운싱) 방지
-  }
-  
-  // 2번 패드 (PAD_B)
-  if (lastB == HIGH && currentB == LOW) {
-    sendMessage("PAD_B");
-    delay(200);
-  }
+  // 서버 연결 시작
+  http.begin(client, serverUrl);
 
-  // 3번 패드 (PAD_C)
-  if (lastC == HIGH && currentC == LOW) {
-    sendMessage("PAD_C");
-    delay(200);
-  }
+  // JSON 형식 지정
+  http.addHeader(
+    "Content-Type",
+    "application/json"
+  );
 
-  // 4번 패드 (PAD_D)
-  if (lastD == HIGH && currentD == LOW) {
-    sendMessage("PAD_D");
-    delay(200);
-  }
+  // 서버로 보낼 데이터
+  String jsonPayload =
+    "{"
+    "\"pad_id\":" + String(padId) + ","
+    "\"value\":" + String(sensorValue) + ","
+    "\"pressure\":" + String(pressurePercent) + ","
+    "\"event\":\"touch\""
+    "}";
 
-  // 5번 패드 (PAD_E)
-  if (lastE == HIGH && currentE == LOW) {
-    sendMessage("PAD_E");
-    delay(200);
-  }
+  Serial.println("전송 데이터:");
+  Serial.println(jsonPayload);
 
-  // 다음 루프 비교를 위해 현재 상태를 이전 상태 변수에 저장
-  lastA = currentA;
-  lastB = currentB;
-  lastC = currentC;
-  lastD = currentD;
-  lastE = currentE;
+  // POST 요청 전송
+  int httpResponseCode =
+    http.POST(jsonPayload);
 
-  delay(10); // 시스템 과부하 방지를 위한 미세한 대기
-}
+  // 결과 출력
+  if (httpResponseCode > 0) {
 
-// =========================
-// 서버 연결 함수
-// =========================
-void connectServer() {
-  Serial.println("파이썬 서버 연결 시도...");
+    Serial.print("전송 성공! 응답 코드: ");
+    Serial.println(httpResponseCode);
 
-  while (!client.connect(host, port)) {
-    Serial.println("연결 실패! 1초 후 재시도...");
-    delay(1000);
+    String response =
+      http.getString();
+
+    Serial.print("서버 응답: ");
+    Serial.println(response);
+
+  } else {
+
+    Serial.print("전송 실패. 에러 코드: ");
+    Serial.println(httpResponseCode);
+
+    Serial.println("서버 주소 또는 포트 확인");
   }
 
-  Serial.println("파이썬 서버 연결 성공!");
-}
+  // 연결 종료
+  http.end();
 
-// =========================
-// 메시지 전송 함수
-// =========================
-void sendMessage(String msg) {
-  client.println(msg); // 문자열 전송 후 끝에 \n 자동으로 붙음
-  Serial.print("서버로 신호 전송: ");
-  Serial.println(msg);
+  Serial.println("--------------------------------");
 }
